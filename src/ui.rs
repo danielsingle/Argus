@@ -264,16 +264,6 @@ pub fn display_error(message: &str) {
     );
 }
 
-/// Display a warning message.
-pub fn display_warning(message: &str) {
-    println!(
-        "  {} {} {}",
-        "⚠️ ".bright_yellow(),
-        "Warning:".bright_yellow().bold(),
-        message.yellow()
-    );
-}
-
 /// Display the welcome banner.
 pub fn display_banner() {
     println!();
