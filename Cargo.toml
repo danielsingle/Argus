@@ -21,33 +21,23 @@ path = "src/main.rs"
 # CLI
 clap = { version = "4.4", features = ["derive", "color"] }
 
-# Async runtime
-tokio = { version = "1.35", features = ["full"] }
-
 # File walking
 walkdir = "2.4"
-ignore = "0.4"
 
 # Colors and terminal UI
 colored = "2.1"
-console = "0.15"
-indicatif = { version = "0.17", features = ["tokio"] }
+indicatif = "0.17"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 
 # PDF extraction
 pdf-extract = "0.7"
 
-# DOCX extraction
-docx-rs = "0.4"
+# DOCX extraction (uses zip to read the archive)
 zip = "0.6"
-quick-xml = "0.31"
 
 # OCR (optional)
 leptess = { version = "0.14", optional = true }
 libc = { version = "0.2", optional = true }
-
-# Image handling
-image = "0.24"
 
 # File opening
 opener = "0.6"
@@ -55,15 +45,15 @@ opener = "0.6"
 # Regex support
 regex = "1.10"
 
+# Serialization (for index files)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
 
 # Parallel processing
 rayon = "1.8"
-
-# Path handling
-pathdiff = "0.2"
 
 # Encoding detection
 encoding_rs = "0.8"
@@ -71,6 +61,9 @@ encoding_rs_io = "0.1"
 
 # MIME type detection
 infer = "0.15"
+
+[dev-dependencies]
+tempfile = "3.24"
 
 [profile.release]
 opt-level = 3

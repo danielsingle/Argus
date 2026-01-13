@@ -4,6 +4,7 @@
 //! including PDFs, Word documents, images (with OCR), and code files.
 
 mod extractors;
+mod index;
 mod search;
 mod types;
 mod ui;
@@ -13,7 +14,7 @@ use std::path::PathBuf;
 use std::process;
 
 use search::SearchEngine;
-use types::SearchConfig;
+use types::{IndexConfig, SearchConfig};
 use ui::{display_banner, display_error, display_results, flush, interactive_select, open_file};
 
 /// Argus - The All-Seeing File Search Tool
@@ -33,7 +34,10 @@ use ui::{display_banner, display_error, display_results, flush, interactive_sele
                   argus -r \"\\bfn\\s+\\w+\"           Use regex pattern matching\n    \
                   argus -e pdf,docx \"report\"      Search only in PDF and DOCX files\n    \
                   argus -o \"text in image\"        Enable OCR for images\n    \
-                  argus -s -l 50 \"Error\"          Case-sensitive, limit to 50 results"
+                  argus -s -l 50 \"Error\"          Case-sensitive, limit to 50 results\n    \
+                  argus -i \"pattern\"              Save index for faster future searches\n    \
+                  argus -I \"pattern\"              Use existing index if available\n    \
+                  argus -iI \"pattern\"             Use index and update it with new files"
 )]
 struct Cli {
     /// The search pattern (text or regex with -r flag)
@@ -88,6 +92,18 @@ struct Cli {
     /// Non-interactive mode (just print results, don't prompt)
     #[arg(short = 'n', long = "non-interactive")]
     non_interactive: bool,
+
+    /// Save index after scanning for faster future searches
+    #[arg(short = 'i', long = "save-index")]
+    save_index: bool,
+
+    /// Use existing index if available (skip re-extraction for unchanged files)
+    #[arg(short = 'I', long = "use-index")]
+    use_index: bool,
+
+    /// Path to index file (default: .argus_index.json in search directory)
+    #[arg(long = "index-file", value_hint = ValueHint::FilePath)]
+    index_file: Option<PathBuf>,
 }
 
 fn main() {
@@ -125,8 +141,9 @@ fn main() {
     }
 
     // Build search configuration
+    let directory = cli.directory.canonicalize().unwrap_or(cli.directory);
     let config = SearchConfig {
-        directory: cli.directory.canonicalize().unwrap_or(cli.directory),
+        directory: directory.clone(),
         pattern: cli.pattern,
         case_sensitive: cli.case_sensitive,
         use_regex: cli.regex,
@@ -138,8 +155,15 @@ fn main() {
         show_preview: cli.preview,
     };
 
+    // Build index configuration
+    let index_config = IndexConfig {
+        save_index: cli.save_index,
+        use_index: cli.use_index,
+        index_file: cli.index_file,
+    };
+
     // Create search engine
-    let engine = match SearchEngine::new(config.clone()) {
+    let mut engine = match SearchEngine::new(config.clone(), index_config) {
         Ok(e) => e,
         Err(e) => {
             display_error(&format!("Invalid regex pattern: {}", e));

@@ -262,21 +262,19 @@ fn extract_image_ocr(_path: &Path) -> ExtractionResult {
 /// Check if a file is binary (non-text).
 pub fn is_binary_file(path: &Path) -> bool {
     // Try to detect file type using magic bytes
-    if let Ok(kind) = infer::get_from_path(path) {
-        if let Some(k) = kind {
-            let mime = k.mime_type();
-            // Allow specific document types
-            if mime == "application/pdf" || mime.starts_with("image/") {
-                return false;
-            }
-            // Check if it's a known binary type
-            if mime.starts_with("application/")
-                && !mime.contains("json")
-                && !mime.contains("xml")
-                && !mime.contains("javascript")
-            {
-                return true;
-            }
+    if let Ok(Some(k)) = infer::get_from_path(path) {
+        let mime = k.mime_type();
+        // Allow specific document types
+        if mime == "application/pdf" || mime.starts_with("image/") {
+            return false;
+        }
+        // Check if it's a known binary type
+        if mime.starts_with("application/")
+            && !mime.contains("json")
+            && !mime.contains("xml")
+            && !mime.contains("javascript")
+        {
+            return true;
         }
     }
 

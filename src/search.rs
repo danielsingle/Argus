@@ -1,12 +1,13 @@
 //! Search engine with parallel processing.
 
 use crate::extractors::{extract_text, is_binary_file};
-use crate::types::{FileType, Match, SearchConfig, SearchResult, SearchStats};
+use crate::index::{get_file_timestamp, Index, IndexEntry};
+use crate::types::{FileType, IndexConfig, Match, SearchConfig, SearchResult, SearchStats};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -15,7 +16,9 @@ use walkdir::{DirEntry, WalkDir};
 /// The search engine that coordinates file discovery and text matching.
 pub struct SearchEngine {
     config: SearchConfig,
+    index_config: IndexConfig,
     pattern: SearchPattern,
+    index: Option<Index>,
 }
 
 /// Compiled search pattern (either regex or literal).
@@ -26,7 +29,7 @@ enum SearchPattern {
 
 impl SearchEngine {
     /// Create a new search engine with the given configuration.
-    pub fn new(config: SearchConfig) -> Result<Self, regex::Error> {
+    pub fn new(config: SearchConfig, index_config: IndexConfig) -> Result<Self, regex::Error> {
         let pattern = if config.use_regex {
             let regex = RegexBuilder::new(&config.pattern)
                 .case_insensitive(!config.case_sensitive)
@@ -40,11 +43,37 @@ impl SearchEngine {
             }
         };
 
-        Ok(Self { config, pattern })
+        // Try to load existing index if use_index is enabled
+        let index = if index_config.use_index || index_config.save_index {
+            let index_path = index_config.get_index_path(&config.directory);
+            match Index::load(&index_path) {
+                Ok(idx) => {
+                    eprintln!("  \x1b[32m✓\x1b[0m Loaded index with {} entries", idx.len());
+                    Some(idx)
+                }
+                Err(_) => {
+                    if index_config.save_index {
+                        // Create new index if we're going to save
+                        Some(Index::new(config.directory.clone()))
+                    } else {
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config,
+            index_config,
+            pattern,
+            index,
+        })
     }
 
     /// Execute the search and return results.
-    pub fn search(&self) -> (Vec<SearchResult>, SearchStats) {
+    pub fn search(&mut self) -> (Vec<SearchResult>, SearchStats) {
         let start = Instant::now();
 
         // Collect all files to search
@@ -65,10 +94,15 @@ impl SearchEngine {
         let results: Arc<Mutex<Vec<SearchResult>>> = Arc::new(Mutex::new(Vec::new()));
         let stats = Arc::new(Mutex::new(SearchStats::new()));
         let files_processed = Arc::new(AtomicUsize::new(0));
+        let new_index_entries: Arc<Mutex<Vec<IndexEntry>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Clone index for thread-safe access
+        let index_ref = self.index.as_ref().map(|i| Arc::new(i.clone()));
+        let save_index = self.index_config.save_index;
 
         // Process files in parallel using rayon
         files.par_iter().for_each(|file_path| {
-            let result = self.search_file(file_path);
+            let result = self.search_file_with_index(file_path, index_ref.as_ref(), &new_index_entries, save_index);
 
             // Update stats
             {
@@ -98,6 +132,30 @@ impl SearchEngine {
         });
 
         pb.finish_with_message("Search complete!");
+
+        // Update index with new entries if save_index is enabled
+        if self.index_config.save_index {
+            if let Some(ref mut index) = self.index {
+                let entries = Arc::try_unwrap(new_index_entries)
+                    .map(|mutex| mutex.into_inner().unwrap())
+                    .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+
+                for entry in entries {
+                    index.upsert_entry(entry);
+                }
+
+                // Prune entries for files that no longer exist
+                index.prune_missing();
+
+                // Save the index
+                let index_path = self.index_config.get_index_path(&self.config.directory);
+                if let Err(e) = index.save(&index_path) {
+                    eprintln!("  \x1b[33m⚠\x1b[0m Warning: Failed to save index: {}", e);
+                } else {
+                    eprintln!("  \x1b[32m✓\x1b[0m Saved index with {} entries to {}", index.len(), index_path.display());
+                }
+            }
+        }
 
         // Get final results and stats
         let mut final_results = Arc::try_unwrap(results)
@@ -175,6 +233,11 @@ impl SearchEngine {
 
     /// Check if a directory entry should be processed.
     fn should_process_entry(&self, entry: &DirEntry) -> bool {
+        // Always process the root directory
+        if entry.depth() == 0 {
+            return true;
+        }
+
         let name = entry.file_name().to_string_lossy();
 
         // Skip hidden files/directories unless configured to include them
@@ -205,8 +268,85 @@ impl SearchEngine {
         true
     }
 
-    /// Search a single file for matches.
-    fn search_file(&self, path: &PathBuf) -> Option<SearchResult> {
+    /// Search a single file for matches, using the index when available.
+    fn search_file_with_index(
+        &self,
+        path: &PathBuf,
+        index: Option<&Arc<Index>>,
+        new_entries: &Arc<Mutex<Vec<IndexEntry>>>,
+        save_index: bool,
+    ) -> Option<SearchResult> {
+        // Determine file type
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let file_type = FileType::from_extension(&ext);
+
+        // Get file metadata
+        let metadata = path.metadata().ok()?;
+        let file_size = metadata.len();
+        let modified_timestamp = get_file_timestamp(path).unwrap_or(0);
+
+        // Try to get text from index first
+        let text = if let Some(idx) = index {
+            if let Some(entry) = idx.get_valid_entry(path) {
+                // Use cached text
+                entry.extracted_text.clone()
+            } else {
+                // Extract text and optionally add to index
+                let extraction = extract_text(path, file_type, self.config.ocr_enabled);
+
+                if !extraction.success {
+                    return Some(SearchResult::with_error(
+                        path.clone(),
+                        file_type,
+                        extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
+                    ));
+                }
+
+                // Queue new entry for index if save_index is enabled
+                if save_index {
+                    let entry = IndexEntry::new(
+                        path.clone(),
+                        file_type,
+                        extraction.text.clone(),
+                        modified_timestamp,
+                        file_size,
+                    );
+                    new_entries.lock().unwrap().push(entry);
+                }
+
+                extraction.text
+            }
+        } else {
+            // No index - extract text normally
+            let extraction = extract_text(path, file_type, self.config.ocr_enabled);
+
+            if !extraction.success {
+                return Some(SearchResult::with_error(
+                    path.clone(),
+                    file_type,
+                    extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
+                ));
+            }
+
+            extraction.text
+        };
+
+        // Search for matches
+        let matches = self.find_matches(&text);
+
+        if matches.is_empty() {
+            None
+        } else {
+            Some(SearchResult::new(path.clone(), file_type, matches, file_size))
+        }
+    }
+
+    /// Search a single file for matches (without index).
+    #[allow(dead_code)]
+    fn search_file(&self, path: &Path) -> Option<SearchResult> {
         // Determine file type
         let ext = path
             .extension()
@@ -222,7 +362,7 @@ impl SearchEngine {
 
         if !extraction.success {
             return Some(SearchResult::with_error(
-                path.clone(),
+                path.to_path_buf(),
                 file_type,
                 extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
             ));
@@ -234,7 +374,7 @@ impl SearchEngine {
         if matches.is_empty() {
             None
         } else {
-            Some(SearchResult::new(path.clone(), file_type, matches, file_size))
+            Some(SearchResult::new(path.to_path_buf(), file_type, matches, file_size))
         }
     }
 
@@ -315,8 +455,9 @@ mod tests {
             pattern: "Hello".to_string(),
             ..Default::default()
         };
+        let index_config = IndexConfig::default();
 
-        let engine = SearchEngine::new(config).unwrap();
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
         let (results, stats) = engine.search();
 
         assert_eq!(results.len(), 1);
@@ -336,8 +477,9 @@ mod tests {
             case_sensitive: false,
             ..Default::default()
         };
+        let index_config = IndexConfig::default();
 
-        let engine = SearchEngine::new(config).unwrap();
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
         let (results, _) = engine.search();
 
         assert_eq!(results.len(), 1);
@@ -356,8 +498,9 @@ mod tests {
             use_regex: true,
             ..Default::default()
         };
+        let index_config = IndexConfig::default();
 
-        let engine = SearchEngine::new(config).unwrap();
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
         let (results, _) = engine.search();
 
         assert_eq!(results.len(), 1);

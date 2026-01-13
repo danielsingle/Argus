@@ -1,11 +1,12 @@
 //! Core data types for Argus search tool.
 
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Represents the type of file being searched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FileType {
     /// Plain text files (.txt, .md, etc.)
     Text,
@@ -266,6 +267,26 @@ impl Default for SearchConfig {
             extensions: Vec::new(),
             show_preview: false,
         }
+    }
+}
+
+/// Configuration for index file handling.
+#[derive(Debug, Clone, Default)]
+pub struct IndexConfig {
+    /// Whether to save an index after scanning.
+    pub save_index: bool,
+    /// Whether to use an existing index if available.
+    pub use_index: bool,
+    /// Path to the index file. If None, defaults to `.argus_index.json` in the search directory.
+    pub index_file: Option<PathBuf>,
+}
+
+impl IndexConfig {
+    /// Get the index file path, using the default if not specified.
+    pub fn get_index_path(&self, search_dir: &Path) -> PathBuf {
+        self.index_file
+            .clone()
+            .unwrap_or_else(|| search_dir.join(".argus_index.json"))
     }
 }
 
