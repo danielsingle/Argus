@@ -233,7 +233,7 @@ pub fn open_file(result: &SearchResult) -> io::Result<()> {
         result.filename().bright_white().bold()
     );
 
-    opener::open(&result.path).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+    opener::open(&result.path).map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// Display an error message.
@@ -263,7 +263,7 @@ pub fn display_banner() {
     );
     println!(
         "    {}",
-        "Advanced File Search Utility"
+        "Advance Search Engine"
             .bright_white()
             .italic()
     );

@@ -21,8 +21,6 @@ path = "src/main.rs"
 # CLI
 clap = { version = "4.4", features = ["derive", "color"] }
 
-# Async runtime
-
 # File walking
 walkdir = "2.4"
 
@@ -34,14 +32,12 @@ dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 # PDF extraction
 pdf-extract = "0.7"
 
-# DOCX extraction
+# DOCX extraction (uses zip to read the archive)
 zip = "0.6"
 
 # OCR (optional)
 leptess = { version = "0.14", optional = true }
 libc = { version = "0.2", optional = true }
-
-# Image handling
 
 # File opening
 opener = "0.6"
@@ -49,13 +45,15 @@ opener = "0.6"
 # Regex support
 regex = "1.10"
 
+# Serialization (for index files)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
 # Error handling
 anyhow = "1.0"
 
 # Parallel processing
 rayon = "1.8"
-
-# Path handling
 
 # Encoding detection
 encoding_rs = "0.8"
@@ -64,11 +62,11 @@ encoding_rs_io = "0.1"
 # MIME type detection
 infer = "0.15"
 
+[dev-dependencies]
+tempfile = "3.24"
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-
-[dev-dependencies]
-tempfile = "3.24.0"
